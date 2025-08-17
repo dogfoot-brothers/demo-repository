@@ -1,8 +1,8 @@
 import openai
 import asyncio
 from typing import List, Dict, Optional
-from config import settings
-from context_data import get_context_for_query
+from .config import settings
+from .context_data import get_context_for_query
 
 class LLMService:
     def __init__(self):

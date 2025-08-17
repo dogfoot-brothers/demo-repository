@@ -8,8 +8,8 @@ from datetime import datetime
 from pydantic import BaseModel
 import asyncio
 import logging
-from config import settings
-from llm_service import llm_service
+from .config import settings
+from .llm_service import llm_service
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

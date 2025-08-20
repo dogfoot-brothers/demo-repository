@@ -17,40 +17,109 @@ class SimpleOptimizer:
         self.max_generations = 1  # 2 → 1로 줄임
         self.improvement_threshold = 0.05
     
-    async def evaluate_prompt(self, prompt: str, user_input: str, expected_output: str, keywords: List[str], exclude_keywords: List[str]) -> float:
-        """프롬프트 평가 (시연용 점수 보정)"""
+    async def evaluate_prompt(self, prompt: str, user_input: str, expected_output: str, keywords: List[str], exclude_keywords: List[str], custom_mutators: List[str] = [], evaluation_weights: Dict = {}) -> float:
+        """AI 기반 프롬프트 평가 (0-100점)"""
         try:
             output = await ask_llm(prompt, user_input)
-            base_score = composite_score(output, expected_output, keywords)
             
-            # 제외 키워드 체크 및 페널티 적용
-            logger.info(f"Checking exclude keywords: {exclude_keywords}")
-            logger.info(f"Output contains: {[kw for kw in exclude_keywords if kw.lower() in output.lower()]}")
-            from scorer_simple import final_score_with_forbidden_check
-            base_score = final_score_with_forbidden_check(base_score, output, exclude_keywords)
+            # 가중치 설정 (비율 기반)
+            raw_weights = {
+                'exclude_keywords': evaluation_weights.get('exclude_keywords', 25),
+                'product_name': evaluation_weights.get('product_name', 25), 
+                'expected_output': evaluation_weights.get('expected_output', 25),
+                'custom_requirements': evaluation_weights.get('custom_requirements', 25)
+            }
             
-            # 시연용 점수 보정: 변이별로 점수 차이 극대화
-            if "custom" in prompt:
-                score = min(1.0, base_score + 0.4)  # 사용자 정의: +0.4 (최고 우선순위)
-            elif "structure" in prompt:
-                score = min(1.0, base_score + 0.3)  # 구조화: +0.3
-            elif "professional" in prompt:
-                score = min(1.0, base_score + 0.25)  # 전문성: +0.25
-            elif "specific" in prompt:
-                score = min(1.0, base_score + 0.2)   # 구체성: +0.2
-            elif "persuasive" in prompt:
-                score = min(1.0, base_score + 0.35)  # 설득력: +0.35
-            elif "actionable" in prompt:
-                score = min(1.0, base_score + 0.3)   # 실행성: +0.3
-            elif "tone" in prompt:
-                score = min(1.0, base_score + 0.25)  # 톤 변이: +0.25
-            elif "format" in prompt:
-                score = min(1.0, base_score + 0.35)  # 형식 변이: +0.35
+            # 총합을 구해서 비율로 변환 (0-100점 기준)
+            total_weight = sum(raw_weights.values())
+            if total_weight > 0:
+                weights = {key: (value / total_weight) * 100 for key, value in raw_weights.items()}
             else:
-                score = base_score  # 기본: 원점수
+                weights = {key: 25 for key in raw_weights.keys()}  # 기본값
             
-            logger.info(f"Prompt score: {score} (base: {base_score})")
-            return score
+            logger.info(f"Evaluation weights: {weights}")
+            
+            # AI 평가 프롬프트 생성
+            evaluation_prompt = f"""
+다음 응답을 4가지 기준으로 평가하여 0-100점 사이의 점수를 매겨라:
+
+**평가 대상 응답:**
+{output}
+
+**평가 기준 (가중치 적용):**
+
+1. **제외 키워드 준수 ({weights['exclude_keywords']}점)**: 다음 단어들이 포함되지 않았는가?
+   제외 키워드: {', '.join(exclude_keywords) if exclude_keywords else '없음'}
+   - 제외 키워드가 하나도 없으면 {weights['exclude_keywords']}점
+   - 제외 키워드가 1개 있으면 {weights['exclude_keywords'] * 0.6:.0f}점
+   - 제외 키워드가 2개 이상 있으면 0점
+
+2. **제품/서비스 이름 포함 ({weights['product_name']}점)**: 다음 이름이 적절히 포함되었는가?
+   필수 포함: {', '.join(keywords) if keywords else '없음'}
+   - 자연스럽게 여러 번 포함되면 {weights['product_name']}점
+   - 1-2번 포함되면 {weights['product_name'] * 0.6:.0f}점
+   - 포함되지 않으면 0점
+
+3. **기대 결과 달성 ({weights['expected_output']}점)**: 다음 기대 결과를 얼마나 잘 충족했는가?
+   기대 결과: {expected_output}
+   - 완벽히 충족하면 {weights['expected_output']}점
+   - 대부분 충족하면 {weights['expected_output'] * 0.8:.0f}점
+   - 부분적으로 충족하면 {weights['expected_output'] * 0.4:.0f}점
+   - 충족하지 못하면 0점
+
+4. **추가 요구사항 반영 ({weights['custom_requirements']}점)**: 다음 요구사항이 얼마나 잘 반영되었는가?
+   추가 요구사항: {', '.join(custom_mutators) if custom_mutators else '없음'}
+   - 모든 요구사항 반영하면 {weights['custom_requirements']}점
+   - 대부분 반영하면 {weights['custom_requirements'] * 0.8:.0f}점
+   - 일부만 반영하면 {weights['custom_requirements'] * 0.4:.0f}점
+   - 반영되지 않으면 0점
+
+**총점 계산:**
+각 기준별 점수를 합산하여 최종 점수 산출 (최대 100점)
+
+**응답 형식:**
+{{"score": 점수(0-100), "breakdown": {{"exclude_keywords": 점수1, "product_name": 점수2, "expected_output": 점수3, "custom_requirements": 점수4}}, "reasoning": "각 기준별 평가 이유와 점수 산정 근거"}}
+
+점수를 정확히 계산하여 JSON 형태로 응답해라.
+"""
+            
+            # AI 평가 실행
+            evaluation_response = await ask_llm(evaluation_prompt, "평가 요청")
+            logger.info(f"AI evaluation response: {evaluation_response}")
+            
+            # JSON 파싱 시도
+            try:
+                import json
+                # 응답에서 JSON 부분만 추출
+                if '{' in evaluation_response and '}' in evaluation_response:
+                    start = evaluation_response.find('{')
+                    end = evaluation_response.rfind('}') + 1
+                    json_str = evaluation_response[start:end]
+                    evaluation_result = json.loads(json_str)
+                    
+                    score = evaluation_result.get('score', 50) / 100.0  # 0-1 범위로 변환
+                    breakdown = evaluation_result.get('breakdown', {})
+                    reasoning = evaluation_result.get('reasoning', '')
+                    
+                    logger.info(f"AI Evaluation - Score: {score*100:.1f}/100")
+                    logger.info(f"Breakdown: {breakdown}")
+                    logger.info(f"Reasoning: {reasoning}")
+                    
+                    # AI 평가 결과를 그대로 사용 (기존 점수 보정 제거)
+                    return max(0.0, min(1.0, score))  # 0-1 범위 보장
+                    
+            except Exception as parse_error:
+                logger.error(f"Failed to parse AI evaluation: {parse_error}")
+                
+            # 파싱 실패시 기본 평가로 폴백
+            logger.info("Falling back to basic evaluation")
+            base_score = composite_score(output, expected_output, keywords)
+            from scorer_simple import final_score_with_forbidden_check
+            final_score = final_score_with_forbidden_check(base_score, output, exclude_keywords)
+            
+            logger.info(f"Fallback score: {final_score}")
+            return final_score
+            
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")
             return 0.5  # 기본 점수
@@ -100,7 +169,7 @@ class SimpleOptimizer:
         logger.info("=== Generation 0 (Smart Mutations) ===")
         gen0_results = {}
         for name, prompt in base_mutations:
-            score = await self.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered)
+            score = await self.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered, custom_mutators)
             gen0_results[name] = score
             logger.info(f"Gen 0 | {name} | score={score}")
         
@@ -188,40 +257,47 @@ class SimpleOptimizer:
             logger.error(f"Input analysis failed: {e}")
             return {"direction": "구체성", "instructions": "구체적인 수치와 예시를 포함하여 작성"}
 
-    async def generate_smart_mutations(self, base_prompt: str, user_input: str, analysis: Dict[str, str], custom_mutators: List[str] = [], exclude_keywords: List[str] = []) -> List[tuple]:
+    async def generate_smart_mutations(self, base_prompt: str, user_input: str, analysis: Dict[str, str], custom_mutators: List[str] = [], exclude_keywords: List[str] = [], product_name: str = "") -> List[tuple]:
         """사용자 입력 분석 결과를 바탕으로 스마트한 변이 생성"""
         
         direction = analysis.get("direction", "구체성")
         instructions = analysis.get("instructions", "구체적인 내용을 포함하여 작성")
         
-        # 제외 키워드 텍스트 준비
+        # 공통 텍스트 준비
         exclude_text = ""
         if exclude_keywords:
             exclude_text = f"\n\n중요: 다음 단어들은 절대 사용하지 마라: {', '.join(exclude_keywords)}"
         
-        # 기본 변이
-        mutations = [("base", base_prompt)]
+        product_text = ""
+        if product_name:
+            product_text = f"\n\n제품/서비스 이름: '{product_name}'을(를) 답변에 자연스럽게 포함시켜라."
         
-        # 사용자 정의 변이 추가 (우선순위 높음)
+        custom_text = ""
         if custom_mutators:
             custom_instructions = "\n".join([f"- {mutator}" for mutator in custom_mutators])
-            mutations.append(("custom", base_prompt + f"\n\n사용자 요구사항:\n{custom_instructions}{exclude_text}"))
+            custom_text = f"\n\n추가 요구사항:\n{custom_instructions}"
         
-        # 방향에 따른 맞춤형 변이
+        # 기본 변이 (이미 모든 요구사항 포함됨)
+        mutations = [("base", base_prompt)]
+        
+        # 사용자 정의 변이 추가 (우선순위 높음) - 기본 변이와 동일하게 모든 요구사항 포함
+        mutations.append(("custom", base_prompt + f"\n\n강화된 사용자 맞춤 접근법 적용"))
+        
+        # 방향에 따른 맞춤형 변이 (모든 요구사항 포함)
         if "구조화" in direction or "문서" in direction or "계획서" in direction:
-            mutations.append(("structure", base_prompt + f"\n\n답변은 반드시 다음 구조로 작성해라:\n{instructions}{exclude_text}"))
+            mutations.append(("structure", base_prompt + f"\n\n답변은 반드시 다음 구조로 작성해라:\n{instructions}"))
         
         elif "전문성" in direction or "전문" in direction or "분석" in direction:
-            mutations.append(("professional", base_prompt + f"\n\n답변은 반드시 다음 요구사항을 만족해라:\n{instructions}{exclude_text}"))
+            mutations.append(("professional", base_prompt + f"\n\n답변은 반드시 다음 요구사항을 만족해라:\n{instructions}"))
         
         elif "구체성" in direction or "구체" in direction or "수치" in direction:
-            mutations.append(("specific", base_prompt + f"\n\n답변은 반드시 다음 요소를 포함해라:\n{instructions}{exclude_text}"))
+            mutations.append(("specific", base_prompt + f"\n\n답변은 반드시 다음 요소를 포함해라:\n{instructions}"))
         
         elif "설득력" in direction or "투자자" in direction or "고객" in direction:
-            mutations.append(("persuasive", base_prompt + f"\n\n답변은 반드시 다음 관점에서 작성해라:\n{instructions}{exclude_text}"))
+            mutations.append(("persuasive", base_prompt + f"\n\n답변은 반드시 다음 관점에서 작성해라:\n{instructions}"))
         
         elif "실행성" in direction or "실행" in direction or "액션" in direction:
-            mutations.append(("actionable", base_prompt + f"\n\n답변은 반드시 다음 형태로 제시해라:\n{instructions}{exclude_text}"))
+            mutations.append(("actionable", base_prompt + f"\n\n답변은 반드시 다음 형태로 제시해라:\n{instructions}"))
         
         # 기본 변이도 추가 (안전장치)
         if len(mutations) == 1:  # base만 있는 경우
@@ -244,6 +320,7 @@ async def optimize_prompt_streaming(
     product_name: str,
     exclude_keywords: List[str],
     custom_mutators: List[str] = [],
+    evaluation_weights: Dict = {},
     stop_event=None
 ):
     """Streaming version of prompt optimization that yields results as they're generated"""
@@ -265,16 +342,25 @@ async def optimize_prompt_streaming(
     keywords = [product_name]
     exclude_keywords_filtered = exclude_keywords
     
-    # 기본 프롬프트 - 제외 키워드 포함
+    # 기본 프롬프트 - 모든 요구사항 포함
     exclude_text = ""
     if exclude_keywords_filtered:
         exclude_text = f"\n\n중요: 다음 단어들은 절대 사용하지 마라: {', '.join(exclude_keywords_filtered)}"
+    
+    product_text = ""
+    if product_name:
+        product_text = f"\n\n제품/서비스 이름: '{product_name}'을(를) 답변에 자연스럽게 포함시켜라."
+    
+    custom_text = ""
+    if custom_mutators:
+        custom_instructions = "\n".join([f"- {mutator}" for mutator in custom_mutators])
+        custom_text = f"\n\n추가 요구사항:\n{custom_instructions}"
     
     base_prompt = f"""사용자 요청: {user_input}
 
 기대 결과: {expected_output}
 
-위 요청에 맞는 구체적이고 실용적인 답변을 작성해라.{exclude_text}"""
+위 요청에 맞는 구체적이고 실용적인 답변을 작성해라.{product_text}{custom_text}{exclude_text}"""
     
     # 사용자 입력 분석
     yield {
@@ -306,7 +392,7 @@ async def optimize_prompt_streaming(
         }
     }
     
-    base_mutations = await optimizer.generate_smart_mutations(base_prompt, user_input, analysis, custom_mutators, exclude_keywords_filtered)
+    base_mutations = await optimizer.generate_smart_mutations(base_prompt, user_input, analysis, custom_mutators, exclude_keywords_filtered, product_name)
     
     yield {
         "type": "mutations",
@@ -382,7 +468,7 @@ async def optimize_prompt_streaming(
             return
         
         # Then evaluate the prompt
-        score = await optimizer.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered)
+        score = await optimizer.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered, custom_mutators, evaluation_weights)
         gen0_results[name] = score
         
         trial_result = {

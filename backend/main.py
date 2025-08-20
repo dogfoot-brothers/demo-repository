@@ -236,6 +236,7 @@ async def optimization_websocket_endpoint(websocket: WebSocket, session_id: str)
                     product_name=message_data.get("product_name", ""),
                     exclude_keywords=message_data.get("exclude_keywords", []),
                     custom_mutators=message_data.get("custom_mutators", []),
+                    evaluation_weights=message_data.get("evaluation_weights", {}),
                     stop_event=optimization_stop_events[session_id]
                 ):
                     message = {

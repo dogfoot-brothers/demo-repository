@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import asyncio
 import logging
 from config import settings
+from threading import Event
 import traceback
 
 # Set up logging
@@ -42,6 +43,7 @@ async def add_charset_header(request: Request, call_next):
 # In-memory storage for demo purposes (in production, use a database)
 chat_sessions: Dict[str, Dict] = {}
 active_connections: Dict[str, WebSocket] = {}
+optimization_stop_events: Dict[str, Event] = {}
 
 # ============================================================================
 # CHAT SYSTEM MODELS AND ENDPOINTS
@@ -179,6 +181,101 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         logger.error(f"Error in WebSocket for session {session_id}: {e}")
         if session_id in active_connections:
             del active_connections[session_id]
+
+
+@app.websocket("/ws/optimization/{session_id}")
+async def optimization_websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for real-time prompt optimization streaming"""
+    await websocket.accept()
+    logger.info(f"Optimization WebSocket connection accepted for session: {session_id}")
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            logger.info(f"Received message from session {session_id}: {data}")
+            
+            message_data = json.loads(data)
+            message_type = message_data.get("type", "optimization_request")
+            
+            if message_type == "stop_optimization":
+                logger.info(f"Received stop signal for session {session_id}")
+                # Set stop event for this session
+                if session_id in optimization_stop_events:
+                    optimization_stop_events[session_id].set()
+                    logger.info(f"Stop event set for session {session_id}")
+                await websocket.send_text(json.dumps({
+                    "type": "optimization_stopped",
+                    "message": "Optimization stopped by user",
+                    "timestamp": datetime.now().isoformat()
+                }))
+                break
+            elif message_type == "optimization_request":
+                # Create stop event for this session
+                optimization_stop_events[session_id] = Event()
+                
+                # Send initial status
+                initial_status = {
+                    "type": "status",
+                    "data": {
+                        "message": "Starting prompt optimization...",
+                        "step": "init"
+                    },
+                    "timestamp": datetime.now().isoformat()
+                }
+                logger.info(f"Sending initial status: {initial_status}")
+                await websocket.send_text(json.dumps(initial_status))
+                
+                # Start streaming optimization
+                from autopromptix_efficient import optimize_prompt_streaming
+                
+                logger.info(f"Starting streaming optimization for session {session_id}")
+                async for result in optimize_prompt_streaming(
+                    user_input=message_data.get("user_input", ""),
+                    expected_output=message_data.get("expected_output", ""),
+                    product_name=message_data.get("product_name", ""),
+                    exclude_keywords=message_data.get("exclude_keywords", []),
+                    custom_mutators=message_data.get("custom_mutators", []),
+                    stop_event=optimization_stop_events[session_id]
+                ):
+                    message = {
+                        "type": result["type"],
+                        "data": result["data"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    logger.info(f"Sending streaming result: {result['type']} - {result.get('data', {}).get('message', 'No message')}")
+                    if result["type"] == "llm_response":
+                        logger.info(f"LLM Response for {result['data']['name']}: {result['data']['output'][:100]}...")
+                    
+                    # Send message immediately
+                    await websocket.send_text(json.dumps(message))
+                
+                # Send completion message
+                completion_message = {
+                    "type": "complete",
+                    "message": "Optimization completed",
+                    "timestamp": datetime.now().isoformat()
+                }
+                logger.info(f"Sending completion message: {completion_message}")
+                await websocket.send_text(json.dumps(completion_message))
+            
+    except WebSocketDisconnect:
+        logger.info(f"Optimization WebSocket disconnected for session: {session_id}")
+        # Clean up stop event
+        if session_id in optimization_stop_events:
+            del optimization_stop_events[session_id]
+    except Exception as e:
+        logger.error(f"Error in optimization WebSocket: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": f"Optimization error: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }))
+        except:
+            pass
 
 async def generate_ai_response(session_id: str, user_message: str):
     """Generate and send AI response for customer messages"""

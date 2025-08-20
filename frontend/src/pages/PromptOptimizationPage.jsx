@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Bot, Zap, TrendingUp, Settings, Play, Copy, Check } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Bot, Zap, TrendingUp, Settings, Play, Copy, Check, Loader } from 'lucide-react'
 
 function PromptOptimizationPage() {
   const [formData, setFormData] = useState({
@@ -13,6 +13,19 @@ function PromptOptimizationPage() {
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [results, setResults] = useState(null)
   const [copiedPrompt, setCopiedPrompt] = useState('')
+  const [streamingData, setStreamingData] = useState({
+    status: null,
+    analysis: null,
+    mutations: [],
+    evaluations: [],
+    currentEvaluation: null,
+    finalResults: null,
+    lastCompletedIndex: -1
+  })
+  const [optimizationSessionId, setOptimizationSessionId] = useState(null)
+  const [renderKey, setRenderKey] = useState(0)
+  const [forceUpdate, setForceUpdate] = useState(0)
+  const wsRef = useRef(null)
 
   const handleInputChange = (e) => {
     const { name, value } = e.target
@@ -22,45 +35,321 @@ function PromptOptimizationPage() {
     }))
   }
 
+  // WebSocket connection management
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+    }
+  }, [])
+  
+  // Force re-render when results change
+  useEffect(() => {
+    if (results) {
+      setRenderKey(prev => prev + 1)
+      setForceUpdate(prev => prev + 1)
+    }
+  }, [results])
+
+  const connectWebSocket = (sessionId) => {
+    // Use Vite proxy to ensure same-origin WS and avoid CORS/proxy issues
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    const wsUrl = `${protocol}//${host}/ws/optimization/${sessionId}`
+    console.log('Creating WebSocket with URL:', wsUrl)
+    const ws = new WebSocket(wsUrl)
+    // Store immediately so all subsequent code uses the same reference
+    wsRef.current = ws
+    
+    ws.onopen = () => {
+      console.log('WebSocket opened successfully')
+      setIsOptimizing(true)
+    }
+    
+        ws.onmessage = (event) => {
+      console.log('Raw WebSocket message received:', event.data)
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[${new Date().toISOString()}] Parsed message:`, data)
+        
+        switch (data.type) {
+        case 'status':
+          console.log('Status received:', data.data)
+          setStreamingData(prev => {
+            const newData = {
+              ...prev,
+              status: data.data
+            }
+            // Force immediate re-render
+            setTimeout(() => setForceUpdate(v => v + 1), 0)
+            return newData
+          })
+          break
+          
+        case 'analysis':
+          setStreamingData(prev => ({
+            ...prev,
+            analysis: data.data
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          break
+          
+        case 'mutations':
+          setStreamingData(prev => ({
+            ...prev,
+            mutations: data.data.mutations
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          break
+          
+        case 'evaluation_start':
+          setStreamingData(prev => ({
+            ...prev,
+            currentEvaluation: data.data
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          break
+          
+        case 'llm_response':
+          // Update status to show current progress
+          setStreamingData(prev => ({
+            ...prev,
+            status: {
+              message: `${data.data.name} 변이에 대한 응답 생성 완료`,
+              step: 'llm_response'
+            }
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          
+          // LLM 응답이 오면 바로 화면에 보여주기 (점수 없이)
+          setResults(prev => {
+            const newTrial = {
+              name: data.data.name,
+              prompt: data.data.prompt,
+              output: data.data.output,
+              score: null // 아직 평가되지 않음
+            }
+            
+            if (!prev) {
+              const newResults = {
+                best_prompt: data.data.prompt,
+                best_output: data.data.output,
+                best_score: null,
+                all_trials: [newTrial],
+                total_evaluations: 0,
+                generations_completed: 1,
+                best_variant: data.data.name,
+                improvement_achieved: false,
+                score_improvement: 0,
+                initial_score: 0
+              }
+              return newResults
+            } else {
+              // 기존 결과에 새로운 응답 추가 (점수 없이)
+              const existingTrialIndex = prev.all_trials.findIndex(trial => trial.name === data.data.name)
+              let newTrials
+              
+              if (existingTrialIndex >= 0) {
+                // 기존 결과 업데이트
+                newTrials = [...prev.all_trials]
+                newTrials[existingTrialIndex] = newTrial
+              } else {
+                // 새로운 결과 추가
+                newTrials = [...prev.all_trials, newTrial]
+              }
+              
+              const updatedResults = {
+                ...prev,
+                all_trials: newTrials,
+                total_evaluations: newTrials.length
+              }
+              return updatedResults
+            }
+          })
+          // 즉시 강제 업데이트
+          setTimeout(() => {
+            setForceUpdate(prev => prev + 1)
+            setRenderKey(prev => prev + 1)
+            // DOM 강제 업데이트
+            document.body.style.display = 'none'
+            document.body.offsetHeight // 강제 리플로우
+            document.body.style.display = ''
+          }, 0)
+          break
+          
+        case 'evaluation_result':
+          setStreamingData(prev => ({
+            ...prev,
+            evaluations: [...prev.evaluations, data.data.trial],
+            currentEvaluation: null,
+            lastCompletedIndex: prev.evaluations.length,
+            status: {
+              message: `${data.data.trial.name} 변이 평가 완료 (점수: ${data.data.trial.score.toFixed(3)})`,
+              step: 'evaluation_complete'
+            }
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          // 평가 완료되면 점수 업데이트
+          setResults(prev => {
+            if (!prev) return null
+            
+            const updatedTrials = prev.all_trials.map(trial => 
+              trial.name === data.data.trial.name 
+                ? { ...trial, score: data.data.trial.score }
+                : trial
+            )
+            
+            // 점수가 있는 결과들 중에서 최고 점수 찾기
+            const scoredTrials = updatedTrials.filter(trial => trial.score !== null)
+            const bestTrial = scoredTrials.length > 0 
+              ? scoredTrials.reduce((best, current) => 
+                  current.score > best.score ? current : best
+                )
+              : null
+            
+            return {
+              ...prev,
+              all_trials: updatedTrials,
+              best_prompt: bestTrial?.prompt || prev.best_prompt,
+              best_output: bestTrial?.output || prev.best_output,
+              best_score: bestTrial?.score || prev.best_score,
+              best_variant: bestTrial?.name || prev.best_variant,
+              score_improvement: bestTrial ? bestTrial.score - (prev.initial_score || 0) : prev.score_improvement
+            }
+          })
+          break
+          
+        case 'final_results':
+          setStreamingData(prev => ({
+            ...prev,
+            finalResults: data.data,
+            status: {
+              message: `최적화 완료! 최고 점수: ${data.data.best_score} (개선: ${data.data.score_improvement})`,
+              step: 'complete'
+            }
+          }))
+          // Force immediate re-render
+          setTimeout(() => setForceUpdate(v => v + 1), 0)
+          
+          // Merge final results with existing trials instead of replacing
+          setResults(prev => {
+            if (!prev) return data.data
+            
+            // Keep the existing trials that were built up during streaming
+            return {
+              ...data.data,
+              all_trials: prev.all_trials.length > 0 ? prev.all_trials : data.data.all_trials
+            }
+          })
+          setIsOptimizing(false)
+          break
+          
+        case 'optimization_stopped':
+          setIsOptimizing(false)
+          break
+          
+        case 'complete':
+          setIsOptimizing(false)
+          break
+          
+        case 'error':
+          console.error('Optimization error:', data.message)
+          alert(`최적화 오류: ${data.message}`)
+          setIsOptimizing(false)
+          break
+      }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error)
+        console.error('Raw message:', event.data)
+      }
+    }
+    
+    ws.onclose = () => {
+      console.log('WebSocket closed')
+      setIsOptimizing(false)
+    }
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error)
+      console.error('WebSocket error details:', error)
+      console.error('WebSocket readyState:', ws.readyState)
+      setIsOptimizing(false)
+    }
+    
+    return ws
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
+    console.log('handleSubmit called')
     setIsOptimizing(true)
     
-    // 디버깅: 입력 데이터 확인
-    console.log('=== 입력 데이터 디버깅 ===')
-    console.log('사용자 요청:', formData.user_input)
-    console.log('기대 결과:', formData.expected_output)
-    console.log('제품명:', formData.product_name)
-    console.log('제외 키워드:', formData.exclude_keywords)
-    console.log('추가 요구사항:', formData.custom_mutators)
+    // Reset streaming data
+    setStreamingData({
+      status: null,
+      analysis: null,
+      mutations: [],
+      evaluations: [],
+      currentEvaluation: null,
+      finalResults: null,
+      lastCompletedIndex: -1
+    })
+    setResults(null)
     
     try {
-      const response = await fetch('/api/prompt-optimization/optimize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-        body: JSON.stringify({
-          user_input: formData.user_input,
-          expected_output: formData.expected_output,
-          product_name: formData.product_name,
-          exclude_keywords: formData.exclude_keywords.split(',').map(w => w.trim()).filter(w => w),
-          custom_mutators: formData.custom_mutators.split('\n').map(m => m.trim()).filter(m => m)
-        }),
-      })
-
-      if (response.ok) {
-        const result = await response.json()
-        console.log('=== 응답 데이터 디버깅 ===')
-        console.log('응답 결과:', result)
-        setResults(result)
+      // Generate session ID
+      const sessionId = `optimization_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      setOptimizationSessionId(sessionId)
+      
+      // Connect WebSocket and wait for it to be ready
+      console.log('About to connect WebSocket')
+      const ws = connectWebSocket(sessionId)
+      
+      // Simple connection check - if already open, proceed immediately
+      if (ws.readyState === WebSocket.OPEN) {
       } else {
-        throw new Error('최적화 실패')
+        // Wait for connection with a simple timeout
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('WebSocket connection timeout'))
+          }, 5000)
+          
+          const checkConnection = () => {
+            if (ws.readyState === WebSocket.OPEN) {
+              clearTimeout(timeout)
+              resolve()
+            } else if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+              clearTimeout(timeout)
+              reject(new Error('WebSocket connection failed'))
+            } else {
+              // Still connecting, check again in 100ms
+              setTimeout(checkConnection, 100)
+            }
+          }
+          
+          checkConnection()
+        })
       }
+      
+      // Send optimization request
+      const requestData = {
+        type: "optimization_request",
+        user_input: formData.user_input,
+        expected_output: formData.expected_output,
+        product_name: formData.product_name,
+        exclude_keywords: formData.exclude_keywords.split(',').map(w => w.trim()).filter(w => w),
+        custom_mutators: formData.custom_mutators.split('\n').map(m => m.trim()).filter(m => m)
+      }
+      ws.send(JSON.stringify(requestData))
     } catch (error) {
-      console.error('Error:', error)
-      alert('프롬프트 최적화 중 오류가 발생했습니다.')
-    } finally {
+      console.error('Error starting optimization:', error)
+      alert('최적화 시작 중 오류가 발생했습니다. 다시 시도해주세요.')
       setIsOptimizing(false)
     }
   }
@@ -160,12 +449,8 @@ function PromptOptimizationPage() {
       <div className="max-w-6xl mx-auto px-4">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="flex items-center justify-center mb-4">
-            <Zap className="w-8 h-8 text-blue-600 mr-3" />
-            <h1 className="text-4xl font-bold text-gray-900">AutoPromptix</h1>
-          </div>
           <p className="text-xl text-gray-600">
-            AI가 자동으로 프롬프트를 최적화하여 원하는 결과를 얻어보세요
+            AI 기반 자동프롬프트 최적화를 통해 원하는 결과를 얻어보세요
           </p>
         </div>
 
@@ -269,6 +554,35 @@ function PromptOptimizationPage() {
                     </>
                   )}
                 </button>
+                
+                {isOptimizing && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                        // 백엔드에 중단 시그널 전송
+                        wsRef.current.send(JSON.stringify({
+                          type: "stop_optimization"
+                        }))
+                      }
+                      setIsOptimizing(false)
+                      setStreamingData({
+                        status: null,
+                        analysis: null,
+                        mutations: [],
+                        evaluations: [],
+                        currentEvaluation: null,
+                        finalResults: null,
+                        lastCompletedIndex: -1
+                      })
+                    }}
+                    className="w-full bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700 flex items-center justify-center mt-2"
+                  >
+                    최적화 중단
+                  </button>
+                )}
+                
+
               </form>
 
               {/* Examples */}
@@ -292,8 +606,146 @@ function PromptOptimizationPage() {
 
           {/* Results */}
           <div className="lg:col-span-2">
-            {results ? (
-              <div className="space-y-6">
+            {/* Streaming Progress - Always show when optimizing */}
+            {isOptimizing && (
+              <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+                <h2 className="text-2xl font-semibold mb-4 flex items-center">
+                  <Loader className="w-6 h-6 mr-2 text-blue-600 animate-spin" />
+                  최적화 진행 중...
+                </h2>
+                
+                {/* Status */}
+                {streamingData.status && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-3"></div>
+                      <span className="text-blue-800">{streamingData.status.message}</span>
+                    </div>
+                  </div>
+                )}
+                
+
+                
+                {/* Analysis */}
+                {streamingData.analysis && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                    <h3 className="font-medium text-green-800 mb-2">분석 완료</h3>
+                    <p className="text-green-700">{streamingData.analysis.message}</p>
+                    <div className="mt-2 text-sm text-green-600">
+                      방향: {streamingData.analysis.analysis?.direction || 'Unknown'}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Mutations */}
+                {streamingData.mutations.length > 0 && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-4">
+                    <h3 className="font-medium text-purple-800 mb-2">프롬프트 변이 생성</h3>
+                    <p className="text-purple-700">{streamingData.mutations.length}개의 변이가 생성되었습니다.</p>
+                    <div className="mt-2 space-y-1">
+                      {streamingData.mutations.map((mutation, index) => (
+                        <div key={index} className="text-sm text-purple-600">
+                          • {mutation.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Current Evaluation */}
+                {streamingData.currentEvaluation && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600 mr-3"></div>
+                      <span className="text-yellow-800">
+                        {streamingData.currentEvaluation.message}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm text-yellow-600">
+                      진행률: {streamingData.currentEvaluation.index + 1}/{streamingData.currentEvaluation.total}
+                    </div>
+                    {/* Progress bar */}
+                    <div className="mt-2 w-full bg-yellow-200 rounded-full h-2">
+                      <div 
+                        className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${((streamingData.currentEvaluation.index + 1) / streamingData.currentEvaluation.total) * 100}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Overall Progress */}
+                {streamingData.mutations.length > 0 && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-gray-700">전체 진행률</span>
+                      <span className="text-sm text-gray-600">
+                        {streamingData.evaluations.length}/{streamingData.mutations.length} 완료
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(streamingData.evaluations.length / streamingData.mutations.length) * 100}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Completed Evaluations - Show in real-time */}
+                {streamingData.evaluations.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="font-medium text-gray-800">완료된 평가 ({streamingData.evaluations.length})</h3>
+                    {streamingData.evaluations.map((evaluation, index) => (
+                      <div key={index} className={`bg-gray-50 border rounded-lg p-3 transition-all duration-300 ${
+                        index === streamingData.lastCompletedIndex ? 'border-green-300 bg-green-50' : 'border-gray-200'
+                      }`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center">
+                            <span className="font-medium text-gray-900">{evaluation.name}</span>
+                            {index === streamingData.lastCompletedIndex && (
+                              <span className="ml-2 px-2 py-1 text-xs bg-green-500 text-white rounded-full animate-pulse">
+                                New
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-sm font-medium text-gray-600">
+                            {(evaluation.score * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-600 mb-2">
+                          <strong>프롬프트:</strong> 
+                          <div className="mt-1 p-2 bg-white border rounded text-gray-700 whitespace-pre-wrap max-h-20 overflow-y-auto">
+                            {evaluation.prompt}
+                          </div>
+                        </div>
+                        <div className="text-sm text-gray-700">
+                          <strong>출력:</strong>
+                          <div className="mt-1 p-2 bg-white border rounded text-gray-800 whitespace-pre-wrap max-h-32 overflow-y-auto">
+                            {evaluation.output}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {/* Completion Message */}
+                {streamingData.finalResults && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center">
+                      <div className="w-4 h-4 bg-green-500 rounded-full mr-3"></div>
+                      <span className="text-green-800 font-medium">최적화 완료!</span>
+                    </div>
+                    <p className="text-green-700 mt-1">{streamingData.finalResults.message}</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Results - Show only after optimization is complete */}
+            {results && !isOptimizing ? (
+              <div key={`${renderKey}-${forceUpdate}`} className="space-y-6">
                 {/* Best Result */}
                 <div className="bg-white rounded-lg shadow-md p-6">
                   <h2 className="text-2xl font-semibold mb-4 flex items-center">
@@ -305,11 +757,16 @@ function PromptOptimizationPage() {
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-green-800">최고 점수</span>
                       <span className="text-2xl font-bold text-green-600">
-                        {(results.best_score * 100).toFixed(1)}%
+                        {results.best_score !== null ? `${(results.best_score * 100).toFixed(1)}%` : '평가 중...'}
                       </span>
                     </div>
                     <div className="text-sm text-green-700">
-                      {results.optimization_summary?.best_variant} 변이 사용
+                      {results.best_variant} 변이 사용
+                      {results.score_improvement > 0 && (
+                        <span className="ml-2 text-green-600">
+                          (+{(results.score_improvement * 100).toFixed(1)}% 개선)
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -343,15 +800,12 @@ function PromptOptimizationPage() {
                         생성된 출력
                       </label>
                       <div className="relative">
-                        <textarea
-                          value={results.best_output}
-                          readOnly
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50"
-                          rows="4"
-                        />
+                        <div className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 whitespace-pre-wrap min-h-[8rem] max-h-[20rem] overflow-y-auto">
+                          {results.best_output}
+                        </div>
                         <button
                           onClick={() => copyToClipboard(results.best_output, 'output')}
-                          className="absolute top-2 right-2 p-2 text-gray-500 hover:text-gray-700"
+                          className="absolute top-2 right-2 p-2 text-gray-500 hover:text-gray-700 bg-white rounded shadow-sm"
                         >
                           {copiedPrompt === 'output' ? (
                             <Check className="w-4 h-4 text-green-600" />
@@ -370,33 +824,36 @@ function PromptOptimizationPage() {
                   <div className="space-y-3">
                     {results.all_trials.map((trial, index) => (
                       <div
-                        key={index}
+                        key={`${trial.name}-${trial.score}-${forceUpdate}-${index}`}
                         className={`p-4 rounded-lg border ${
-                          trial.name === results.optimization_summary?.best_variant
+                          trial.name === results.best_variant
                             ? 'border-green-200 bg-green-50'
                             : 'border-gray-200 bg-gray-50'
                         }`}
                       >
                         <div className="flex items-center justify-between mb-2">
                           <span className="font-medium text-gray-900">
-                            {trial.name} {trial.name === results.optimization_summary?.best_variant && '⭐'}
+                            {trial.name} {trial.name === results.best_variant && trial.score !== null && '⭐'}
                           </span>
                           <span className="text-sm font-medium text-gray-600">
-                            {(trial.score * 100).toFixed(1)}%
+                            {trial.score !== null ? `${(trial.score * 100).toFixed(1)}%` : '평가 중...'}
                           </span>
                         </div>
                         <div className="text-sm text-gray-600 mb-2">
                           <strong>프롬프트:</strong> {trial.prompt}
                         </div>
                         <div className="text-sm text-gray-700">
-                          <strong>출력:</strong> {trial.output}
+                          <strong>출력:</strong>
+                          <div className="mt-1 p-2 bg-white border rounded text-gray-800 whitespace-pre-wrap">
+                            {trial.output}
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : !isOptimizing ? (
               <div className="bg-white rounded-lg shadow-md p-12 text-center">
                 <Bot className="w-16 h-16 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-xl font-medium text-gray-900 mb-2">
@@ -406,7 +863,7 @@ function PromptOptimizationPage() {
                   왼쪽에서 프롬프트 설정을 입력하고 최적화를 시작해보세요.
                 </p>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

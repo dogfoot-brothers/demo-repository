@@ -24,8 +24,10 @@ class SimpleOptimizer:
             base_score = composite_score(output, expected_output, keywords)
             
             # 제외 키워드 체크 및 페널티 적용
+            logger.info(f"Checking exclude keywords: {exclude_keywords}")
+            logger.info(f"Output contains: {[kw for kw in exclude_keywords if kw.lower() in output.lower()]}")
             from scorer_simple import final_score_with_forbidden_check
-            base_score = final_score_with_forbidden_check(base_score, output, keywords)
+            base_score = final_score_with_forbidden_check(base_score, output, exclude_keywords)
             
             # 시연용 점수 보정: 변이별로 점수 차이 극대화
             if "custom" in prompt:
@@ -186,11 +188,16 @@ class SimpleOptimizer:
             logger.error(f"Input analysis failed: {e}")
             return {"direction": "구체성", "instructions": "구체적인 수치와 예시를 포함하여 작성"}
 
-    async def generate_smart_mutations(self, base_prompt: str, user_input: str, analysis: Dict[str, str], custom_mutators: List[str] = []) -> List[tuple]:
+    async def generate_smart_mutations(self, base_prompt: str, user_input: str, analysis: Dict[str, str], custom_mutators: List[str] = [], exclude_keywords: List[str] = []) -> List[tuple]:
         """사용자 입력 분석 결과를 바탕으로 스마트한 변이 생성"""
         
         direction = analysis.get("direction", "구체성")
         instructions = analysis.get("instructions", "구체적인 내용을 포함하여 작성")
+        
+        # 제외 키워드 텍스트 준비
+        exclude_text = ""
+        if exclude_keywords:
+            exclude_text = f"\n\n중요: 다음 단어들은 절대 사용하지 마라: {', '.join(exclude_keywords)}"
         
         # 기본 변이
         mutations = [("base", base_prompt)]
@@ -198,29 +205,29 @@ class SimpleOptimizer:
         # 사용자 정의 변이 추가 (우선순위 높음)
         if custom_mutators:
             custom_instructions = "\n".join([f"- {mutator}" for mutator in custom_mutators])
-            mutations.append(("custom", base_prompt + f"\n\n사용자 요구사항:\n{custom_instructions}"))
+            mutations.append(("custom", base_prompt + f"\n\n사용자 요구사항:\n{custom_instructions}{exclude_text}"))
         
         # 방향에 따른 맞춤형 변이
         if "구조화" in direction or "문서" in direction or "계획서" in direction:
-            mutations.append(("structure", base_prompt + f"\n\n답변은 반드시 다음 구조로 작성해라:\n{instructions}"))
+            mutations.append(("structure", base_prompt + f"\n\n답변은 반드시 다음 구조로 작성해라:\n{instructions}{exclude_text}"))
         
         elif "전문성" in direction or "전문" in direction or "분석" in direction:
-            mutations.append(("professional", base_prompt + f"\n\n답변은 반드시 다음 요구사항을 만족해라:\n{instructions}"))
+            mutations.append(("professional", base_prompt + f"\n\n답변은 반드시 다음 요구사항을 만족해라:\n{instructions}{exclude_text}"))
         
         elif "구체성" in direction or "구체" in direction or "수치" in direction:
-            mutations.append(("specific", base_prompt + f"\n\n답변은 반드시 다음 요소를 포함해라:\n{instructions}"))
+            mutations.append(("specific", base_prompt + f"\n\n답변은 반드시 다음 요소를 포함해라:\n{instructions}{exclude_text}"))
         
         elif "설득력" in direction or "투자자" in direction or "고객" in direction:
-            mutations.append(("persuasive", base_prompt + f"\n\n답변은 반드시 다음 관점에서 작성해라:\n{instructions}"))
+            mutations.append(("persuasive", base_prompt + f"\n\n답변은 반드시 다음 관점에서 작성해라:\n{instructions}{exclude_text}"))
         
         elif "실행성" in direction or "실행" in direction or "액션" in direction:
-            mutations.append(("actionable", base_prompt + f"\n\n답변은 반드시 다음 형태로 제시해라:\n{instructions}"))
+            mutations.append(("actionable", base_prompt + f"\n\n답변은 반드시 다음 형태로 제시해라:\n{instructions}{exclude_text}"))
         
         # 기본 변이도 추가 (안전장치)
         if len(mutations) == 1:  # base만 있는 경우
             mutations.extend([
-                ("tone", base_prompt + "\n\n답변은 반드시 다음 형식으로 작성해라:\n1. 전문적이고 설득력 있는 어조 사용\n2. 구체적인 수치와 데이터 포함\n3. 투자자/고객이 원하는 핵심 정보 우선 배치\n4. 각 섹션마다 명확한 제목과 요약 포함"),
-                ("format", base_prompt + "\n\n답변은 반드시 다음 구조로 작성해라:\n- 제목: [명확한 제목]\n- 요약: [핵심 내용 2-3줄]\n- 상세 내용: [번호와 불릿으로 구체적 단계 제시]\n- 결론: [실행 가능한 다음 단계 제시]\n- 부록: [참고 자료나 추가 정보]")
+                ("tone", base_prompt + f"\n\n답변은 반드시 다음 형식으로 작성해라:\n1. 전문적이고 설득력 있는 어조 사용\n2. 구체적인 수치와 데이터 포함\n3. 투자자/고객이 원하는 핵심 정보 우선 배치\n4. 각 섹션마다 명확한 제목과 요약 포함{exclude_text}"),
+                ("format", base_prompt + f"\n\n답변은 반드시 다음 구조로 작성해라:\n- 제목: [명확한 제목]\n- 요약: [핵심 내용 2-3줄]\n- 상세 내용: [번호와 불릿으로 구체적 단계 제시]\n- 결론: [실행 가능한 다음 단계 제시]\n- 부록: [참고 자료나 추가 정보]{exclude_text}")
             ])
         
         return mutations
@@ -230,3 +237,201 @@ async def optimize_prompt_simple(*args, **kwargs):
     """기존 함수명과의 호환성"""
     optimizer = SimpleOptimizer()
     return await optimizer.optimize_prompt_simple(*args, **kwargs)
+
+async def optimize_prompt_streaming(
+    user_input: str,
+    expected_output: str,
+    product_name: str,
+    exclude_keywords: List[str],
+    custom_mutators: List[str] = [],
+    stop_event=None
+):
+    """Streaming version of prompt optimization that yields results as they're generated"""
+    optimizer = SimpleOptimizer()
+    
+    # Send initial status
+    yield {
+        "type": "status",
+        "data": {
+            "message": "Starting prompt optimization...",
+            "step": "init"
+        }
+    }
+    # Force async yield to allow message to be sent
+    import asyncio
+    await asyncio.sleep(0)
+    
+    # 키워드 설정 (제품명만)
+    keywords = [product_name]
+    exclude_keywords_filtered = exclude_keywords
+    
+    # 기본 프롬프트 - 제외 키워드 포함
+    exclude_text = ""
+    if exclude_keywords_filtered:
+        exclude_text = f"\n\n중요: 다음 단어들은 절대 사용하지 마라: {', '.join(exclude_keywords_filtered)}"
+    
+    base_prompt = f"""사용자 요청: {user_input}
+
+기대 결과: {expected_output}
+
+위 요청에 맞는 구체적이고 실용적인 답변을 작성해라.{exclude_text}"""
+    
+    # 사용자 입력 분석
+    yield {
+        "type": "status",
+        "data": {
+            "message": "Analyzing user input...",
+            "step": "analysis"
+        }
+    }
+    
+    analysis = await optimizer.analyze_user_input(user_input)
+    
+    yield {
+        "type": "analysis",
+        "data": {
+            "analysis": analysis,
+            "message": f"Analysis complete: {analysis.get('direction', 'Unknown')}"
+        }
+    }
+    # Force async yield to allow message to be sent
+    await asyncio.sleep(0)
+    
+    # 스마트 변이 생성
+    yield {
+        "type": "status",
+        "data": {
+            "message": "Generating prompt variations...",
+            "step": "mutation"
+        }
+    }
+    
+    base_mutations = await optimizer.generate_smart_mutations(base_prompt, user_input, analysis, custom_mutators, exclude_keywords_filtered)
+    
+    yield {
+        "type": "mutations",
+        "data": {
+            "mutations": [{"name": name, "prompt": prompt} for name, prompt in base_mutations],
+            "message": f"Generated {len(base_mutations)} variations"
+        }
+    }
+    # Force async yield to allow message to be sent
+    await asyncio.sleep(0)
+    
+    # 평가 시작
+    yield {
+        "type": "status",
+        "data": {
+            "message": "Evaluating prompt variations...",
+            "step": "evaluation"
+        }
+    }
+    
+    gen0_results = {}
+    all_trials = []
+    
+    for i, (name, prompt) in enumerate(base_mutations):
+        # Check for stop signal
+        if stop_event and stop_event.is_set():
+            logger.info("Stop signal received, breaking optimization loop")
+            return
+            
+        # Send evaluation start
+        yield {
+            "type": "evaluation_start",
+            "data": {
+                "name": name,
+                "index": i,
+                "total": len(base_mutations),
+                "message": f"Evaluating variation {i+1}/{len(base_mutations)}: {name}"
+            }
+        }
+        # Force async yield to allow message to be sent
+        await asyncio.sleep(0)
+        
+        # Check for stop signal before LLM call
+        if stop_event and stop_event.is_set():
+            logger.info("Stop signal received before LLM call")
+            return
+        
+        # Generate output for this variation first
+        from llm import ask_llm
+        output = await ask_llm(prompt, user_input)
+        
+        # Check for stop signal after LLM call
+        if stop_event and stop_event.is_set():
+            logger.info("Stop signal received after LLM call")
+            return
+        
+        # Send LLM response immediately
+        yield {
+            "type": "llm_response",
+            "data": {
+                "name": name,
+                "prompt": prompt,
+                "output": output,
+                "message": f"Generated response for '{name}'"
+            }
+        }
+        # Force async yield to allow message to be sent
+        await asyncio.sleep(0)
+        
+        # Check for stop signal before evaluation
+        if stop_event and stop_event.is_set():
+            logger.info("Stop signal received before evaluation")
+            return
+        
+        # Then evaluate the prompt
+        score = await optimizer.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered)
+        gen0_results[name] = score
+        
+        trial_result = {
+            "name": name,
+            "prompt": prompt,
+            "score": score,
+            "output": output
+        }
+        all_trials.append(trial_result)
+        
+        # Send evaluation result with score
+        yield {
+            "type": "evaluation_result",
+            "data": {
+                "trial": trial_result,
+                "message": f"Variation '{name}' scored {score:.3f}"
+            }
+        }
+        # Force async yield to allow message to be sent
+        await asyncio.sleep(0)
+    
+    # 최고 점수 선택
+    best_gen0 = max(gen0_results.items(), key=lambda x: x[1])
+    current_best_score = best_gen0[1]
+    
+    # 최고 점수에 해당하는 프롬프트 찾기
+    best_prompt = base_mutations[0][1]  # 기본값
+    for name, prompt in base_mutations:
+        if name == best_gen0[0]:
+            best_prompt = prompt
+            break
+    
+    initial_score = gen0_results.get("base", 0.5)
+    improvement = current_best_score - initial_score
+    
+    # Send final results
+    yield {
+        "type": "final_results",
+        "data": {
+            "best_prompt": best_prompt,
+            "best_output": await ask_llm(best_prompt, user_input),
+            "best_score": round(current_best_score, 3),
+            "all_trials": all_trials,
+            "total_evaluations": len(gen0_results),
+            "generations_completed": 1,
+            "best_variant": best_gen0[0],
+            "improvement_achieved": improvement > 0,
+            "score_improvement": round(improvement, 3),
+            "initial_score": round(initial_score, 3),
+            "message": f"Optimization complete! Best score: {current_best_score:.3f} (improvement: {improvement:.3f})"
+        }
+    }

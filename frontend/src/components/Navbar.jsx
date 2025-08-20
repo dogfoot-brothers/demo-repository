@@ -14,7 +14,7 @@ function Navbar({ currentPage, onPageChange }) {
           <div className="flex items-center space-x-3">
             <Bot className="w-8 h-8 text-blue-600" />
             <span className="text-xl font-bold text-gray-900">
-              AI 플랫폼
+              AutoPromptix
             </span>
           </div>
 

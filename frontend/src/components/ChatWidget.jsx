@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { MessageCircle, X, Minimize2, Send, Bot } from 'lucide-react'
 
 function ChatWidget() {
@@ -10,6 +10,7 @@ function ChatWidget() {
   const [newMessage, setNewMessage] = useState('')
   const [ws, setWs] = useState(null)
   const [isAiTyping, setIsAiTyping] = useState(false)
+  const messagesEndRef = useRef(null)
 
   // Listen for custom event to open chat widget
   useEffect(() => {
@@ -24,6 +25,13 @@ function ChatWidget() {
       window.removeEventListener('openChatWidget', handleOpenChatWidget)
     }
   }, [])
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages, isAiTyping])
 
   const startChat = async () => {
     if (!customerName.trim()) return
@@ -49,7 +57,7 @@ function ChatWidget() {
         const websocket = new WebSocket(`${protocol}//${host}/ws/chat/${session.session_id}`)
         
         websocket.onopen = () => {
-          console.log('WebSocket connected')
+          setIsConnected(true)
         }
         
         websocket.onmessage = (event) => {
@@ -63,7 +71,7 @@ function ChatWidget() {
         }
         
         websocket.onclose = () => {
-          console.log('WebSocket disconnected')
+          setIsConnected(false)
         }
         
         websocket.onerror = (error) => {
@@ -155,7 +163,7 @@ function ChatWidget() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-80 bg-white rounded-lg shadow-xl border">
+    <div className="fixed bottom-4 right-4 z-50 w-96 bg-white rounded-lg shadow-xl border">
       {/* Header */}
       <div className="bg-primary-600 text-white p-4 rounded-t-lg">
         <div className="flex items-center justify-between">
@@ -181,7 +189,7 @@ function ChatWidget() {
       </div>
 
       {/* Chat Area */}
-      <div className="h-80 flex flex-col">
+      <div className="h-[36rem] flex flex-col">
         {!sessionId ? (
           // Initial setup
           <div className="flex-1 p-4">
@@ -253,6 +261,9 @@ function ChatWidget() {
                   </div>
                 </div>
               )}
+              
+              {/* Invisible element to scroll to */}
+              <div ref={messagesEndRef} />
             </div>
             
             {/* Message Input */}

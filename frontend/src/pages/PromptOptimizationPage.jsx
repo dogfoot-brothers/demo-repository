@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Bot, Zap, TrendingUp, Settings, Play, Copy, Check, Loader } from 'lucide-react'
+import { Bot, Zap, TrendingUp, Settings, Play, Copy, Check, Loader, Lock, Unlock } from 'lucide-react'
 
 function PromptOptimizationPage() {
   const [formData, setFormData] = useState({
@@ -9,6 +9,15 @@ function PromptOptimizationPage() {
     exclude_keywords: '',
     custom_mutators: ''
   })
+  
+  const [evaluationWeights, setEvaluationWeights] = useState({
+    exclude_keywords: 50,
+    product_name: 50,
+    expected_output: 50,
+    custom_requirements: 50
+  })
+  
+
   
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [results, setResults] = useState(null)
@@ -25,6 +34,7 @@ function PromptOptimizationPage() {
   const [optimizationSessionId, setOptimizationSessionId] = useState(null)
   const [renderKey, setRenderKey] = useState(0)
   const [forceUpdate, setForceUpdate] = useState(0)
+  const [isReOptimizing, setIsReOptimizing] = useState(false)
   const wsRef = useRef(null)
 
   const handleInputChange = (e) => {
@@ -33,6 +43,26 @@ function PromptOptimizationPage() {
       ...prev,
       [name]: value
     }))
+  }
+
+  const handleWeightChange = (criterion, newValue) => {
+    const value = Math.max(0, Math.min(100, parseInt(newValue))) // 0-100 range
+    
+    setEvaluationWeights(prev => ({
+      ...prev,
+      [criterion]: value
+    }))
+  }
+
+
+
+  const getTotalWeight = () => {
+    return Object.values(evaluationWeights).reduce((sum, weight) => sum + weight, 0)
+  }
+
+  const getWeightRatio = (criterion) => {
+    const total = getTotalWeight()
+    return total > 0 ? (evaluationWeights[criterion] / total * 100).toFixed(1) : 0
   }
 
   // WebSocket connection management
@@ -64,7 +94,9 @@ function PromptOptimizationPage() {
     
     ws.onopen = () => {
       console.log('WebSocket opened successfully')
-      setIsOptimizing(true)
+      if (!isReOptimizing) {
+        setIsOptimizing(true)
+      }
     }
     
         ws.onmessage = (event) => {
@@ -248,6 +280,7 @@ function PromptOptimizationPage() {
             }
           })
           setIsOptimizing(false)
+          setIsReOptimizing(false)
           break
           
         case 'optimization_stopped':
@@ -344,7 +377,8 @@ function PromptOptimizationPage() {
         expected_output: formData.expected_output,
         product_name: formData.product_name,
         exclude_keywords: formData.exclude_keywords.split(',').map(w => w.trim()).filter(w => w),
-        custom_mutators: formData.custom_mutators.split('\n').map(m => m.trim()).filter(m => m)
+        custom_mutators: formData.custom_mutators.split('\n').map(m => m.trim()).filter(m => m),
+        evaluation_weights: evaluationWeights
       }
       ws.send(JSON.stringify(requestData))
     } catch (error) {
@@ -373,6 +407,78 @@ function PromptOptimizationPage() {
       custom_mutators: example.custom_mutators
     })
     setResults(null)
+  }
+
+  const handleReOptimize = async () => {
+    if (!results || !results.best_prompt) return
+    
+    setIsReOptimizing(true)
+    try {
+      // Use the best prompt as input for re-optimization
+      const reOptimizedFormData = {
+        user_input: results.best_prompt, // Use the optimized prompt as new input
+        expected_output: formData.expected_output,
+        product_name: formData.product_name,
+        exclude_keywords: formData.exclude_keywords.split(',').map(w => w.trim()).filter(w => w),
+        custom_mutators: formData.custom_mutators.split('\n').map(m => m.trim()).filter(m => m).concat([
+          "이전 최적화 결과를 바탕으로 더욱 개선된 프롬프트 생성",
+          "더 구체적이고 효과적인 지시사항 포함",
+          "성능과 명확성을 동시에 향상"
+        ]),
+        evaluation_weights: evaluationWeights
+      }
+
+      // Generate new session ID for re-optimization
+      const sessionId = `reoptimization_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      setOptimizationSessionId(sessionId)
+      
+      // Reset streaming data
+      setStreamingData({
+        status: null,
+        analysis: null,
+        mutations: [],
+        evaluations: [],
+        currentEvaluation: null,
+        finalResults: null,
+        lastCompletedIndex: -1
+      })
+      
+      // Connect WebSocket and send re-optimization request
+      const ws = connectWebSocket(sessionId)
+      
+      // Wait for connection
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('WebSocket connection timeout'))
+        }, 5000)
+        
+        const checkConnection = () => {
+          if (ws.readyState === WebSocket.OPEN) {
+            clearTimeout(timeout)
+            resolve()
+          } else if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            clearTimeout(timeout)
+            reject(new Error('WebSocket connection failed'))
+          } else {
+            setTimeout(checkConnection, 100)
+          }
+        }
+        
+        checkConnection()
+      })
+      
+      // Send re-optimization request
+      const requestData = {
+        type: "optimization_request",
+        ...reOptimizedFormData
+      }
+      ws.send(JSON.stringify(requestData))
+      
+    } catch (error) {
+      console.error('Error starting re-optimization:', error)
+      alert('재최적화 시작 중 오류가 발생했습니다. 다시 시도해주세요.')
+      setIsReOptimizing(false)
+    }
   }
 
   const examples = [
@@ -535,6 +641,83 @@ function PromptOptimizationPage() {
                     rows="3"
                     placeholder="예: 데이터 기반 분석, 구체적 수치 포함, 실행 가능한 액션 플랜 제시"
                   />
+                </div>
+
+                {/* Evaluation Weights */}
+                <div className="border-t pt-4 mt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-3">
+                    평가 기준 가중치 (비율 기반)
+                  </label>
+                  
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">제외 키워드 준수</span>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={evaluationWeights.exclude_keywords}
+                          onChange={(e) => handleWeightChange('exclude_keywords', e.target.value)}
+                          className="w-24"
+                        />
+                        <span className="text-sm font-medium w-12 text-right">
+                          {evaluationWeights.exclude_keywords} ({getWeightRatio('exclude_keywords')}%)
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">제품/서비스 이름 포함</span>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={evaluationWeights.product_name}
+                          onChange={(e) => handleWeightChange('product_name', e.target.value)}
+                          className="w-24"
+                        />
+                        <span className="text-sm font-medium w-12 text-right">
+                          {evaluationWeights.product_name} ({getWeightRatio('product_name')}%)
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">기대 결과 달성</span>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={evaluationWeights.expected_output}
+                          onChange={(e) => handleWeightChange('expected_output', e.target.value)}
+                          className="w-24"
+                        />
+                        <span className="text-sm font-medium w-12 text-right">
+                          {evaluationWeights.expected_output} ({getWeightRatio('expected_output')}%)
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">추가 요구사항 반영</span>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={evaluationWeights.custom_requirements}
+                          onChange={(e) => handleWeightChange('custom_requirements', e.target.value)}
+                          className="w-24"
+                        />
+                        <span className="text-sm font-medium w-12 text-right">
+                          {evaluationWeights.custom_requirements} ({getWeightRatio('custom_requirements')}%)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <button
@@ -815,6 +998,27 @@ function PromptOptimizationPage() {
                         </button>
                       </div>
                     </div>
+                    
+                    {/* Re-optimization Button */}
+                    <div className="mt-4">
+                      <button
+                        onClick={handleReOptimize}
+                        disabled={isReOptimizing}
+                        className="w-full bg-purple-600 text-white py-2 px-4 rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                      >
+                        {isReOptimizing ? (
+                          <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                            재최적화 중...
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-4 h-4 mr-2" />
+                            AI로 한 번 더 최적화
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -872,3 +1076,4 @@ function PromptOptimizationPage() {
 }
 
 export default PromptOptimizationPage
+

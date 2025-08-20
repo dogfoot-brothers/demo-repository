@@ -416,6 +416,7 @@ async def optimize_prompt_streaming(
     gen0_results = {}
     all_trials = []
     
+    # Process variations one by one but with immediate streaming
     for i, (name, prompt) in enumerate(base_mutations):
         # Check for stop signal
         if stop_event and stop_event.is_set():
@@ -432,65 +433,56 @@ async def optimize_prompt_streaming(
                 "message": f"Evaluating variation {i+1}/{len(base_mutations)}: {name}"
             }
         }
-        # Force async yield to allow message to be sent
         await asyncio.sleep(0)
         
-        # Check for stop signal before LLM call
-        if stop_event and stop_event.is_set():
-            logger.info("Stop signal received before LLM call")
-            return
-        
-        # Generate output for this variation first
-        from llm import ask_llm
-        output = await ask_llm(prompt, user_input)
-        
-        # Check for stop signal after LLM call
-        if stop_event and stop_event.is_set():
-            logger.info("Stop signal received after LLM call")
-            return
-        
-        # Send LLM response immediately
-        yield {
-            "type": "llm_response",
-            "data": {
+        try:
+            # Generate output
+            from llm import ask_llm
+            output = await ask_llm(prompt, user_input)
+            
+            # Send LLM response immediately
+            yield {
+                "type": "llm_response",
+                "data": {
+                    "name": name,
+                    "prompt": prompt,
+                    "output": output,
+                    "message": f"Generated response for '{name}'"
+                }
+            }
+            await asyncio.sleep(0)
+            
+            # Evaluate the prompt
+            score = await optimizer.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered, custom_mutators, evaluation_weights)
+            gen0_results[name] = score
+            
+            trial_result = {
                 "name": name,
                 "prompt": prompt,
-                "output": output,
-                "message": f"Generated response for '{name}'"
+                "score": score,
+                "output": output
             }
-        }
-        # Force async yield to allow message to be sent
-        await asyncio.sleep(0)
-        
-        # Check for stop signal before evaluation
-        if stop_event and stop_event.is_set():
-            logger.info("Stop signal received before evaluation")
-            return
-        
-        # Then evaluate the prompt
-        score = await optimizer.evaluate_prompt(prompt, user_input, expected_output, keywords, exclude_keywords_filtered, custom_mutators, evaluation_weights)
-        gen0_results[name] = score
-        
-        trial_result = {
-            "name": name,
-            "prompt": prompt,
-            "score": score,
-            "output": output
-        }
-        all_trials.append(trial_result)
-        
-        # Send evaluation result with score
-        yield {
-            "type": "evaluation_result",
-            "data": {
-                "trial": trial_result,
-                "message": f"Variation '{name}' scored {score:.3f}"
+            all_trials.append(trial_result)
+            
+            # Send evaluation result immediately
+            yield {
+                "type": "evaluation_result",
+                "data": {
+                    "trial": trial_result,
+                    "message": f"Variation '{name}' scored {score:.3f}"
+                }
             }
-        }
-        # Force async yield to allow message to be sent
-        await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            
+        except Exception as e:
+            logger.error(f"Error processing variation {name}: {e}")
+            continue
     
-    # 최고 점수 선택
+    # 최고 점수 선택 (안전 체크)
+    if not gen0_results:
+        logger.error("No results generated - all variations failed")
+        return
+        
     best_gen0 = max(gen0_results.items(), key=lambda x: x[1])
     current_best_score = best_gen0[1]
     

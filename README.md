@@ -46,8 +46,7 @@ demo-repository/
 ### 1. 백엔드 설정
 
 ```bash
-cd backend
-pip install -r ../requirements.txt
+pip install -r requirements.txt
 ```
 
 환경 변수 설정:
@@ -73,7 +72,6 @@ npm install
 ### 4. 프론트엔드 실행
 
 ```bash
-cd frontend
 npm run dev
 ```
 

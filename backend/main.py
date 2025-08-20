@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import asyncio
 import logging
 from config import settings
+import traceback
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -320,6 +321,7 @@ async def optimize_prompt_api(req: OptimizeRequest):
         
     except Exception as e:
         logger.error(f"프롬프트 최적화 실패: {str(e)}")
+        logger.error(f"오류 상세: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"프롬프트 최적화 중 오류가 발생했습니다: {str(e)}")
 
 @app.get("/api/prompt-optimization/examples")

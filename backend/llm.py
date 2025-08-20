@@ -17,7 +17,7 @@ if not api_key:
 else:
     client = openai.OpenAI(
         api_key=api_key,
-        base_url=os.getenv("OPENAI_API_BASE", None)
+
     )
 
 async def ask_llm(prompt: str, user_input: str, model: str = "gpt-3.5-turbo") -> str:

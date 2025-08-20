@@ -107,7 +107,7 @@ async def ask_llm_with_context(
             model=model,
             messages=messages,
             temperature=0.3,
-            max_tokens=500
+            max_tokens=2000
         )
         
         result = response.choices[0].message.content.strip()

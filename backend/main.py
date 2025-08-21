@@ -12,6 +12,7 @@ import logging
 from config import settings
 from threading import Event
 import traceback
+from autopromptix import optimize_prompt_simple, optimize_prompt_streaming, ask_llm
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -227,8 +228,6 @@ async def optimization_websocket_endpoint(websocket: WebSocket, session_id: str)
                 await websocket.send_text(json.dumps(initial_status))
                 
                 # Start streaming optimization
-                from autopromptix_efficient import optimize_prompt_streaming
-                
                 logger.info(f"Starting streaming optimization for session {session_id}")
                 async for result in optimize_prompt_streaming(
                     user_input=message_data.get("user_input", ""),
@@ -287,7 +286,6 @@ async def generate_ai_response(session_id: str, user_message: str):
         customer_name = chat_sessions[session_id]["session"]["customer_name"]
         
         # Generate AI response
-        from llm import ask_llm
         ai_response = await ask_llm(
             f"고객 지원: {user_message}",
             f"고객 {customer_name}님의 문의에 대해 도움이 되는 답변을 제공해라."
@@ -357,7 +355,6 @@ async def send_message(message: ChatMessage):
 async def test_llm_response(query: str = "Hello"):
     """Test endpoint for LLM responses"""
     try:
-        from llm import ask_llm
         response = await ask_llm("테스트", query)
         return {"query": query, "response": response, "status": "success"}
     except Exception as e:
@@ -400,8 +397,6 @@ async def optimize_prompt_api(req: OptimizeRequest):
         if not req.expected_output or req.expected_output.strip() == "":
             req.expected_output = "구체적이고 실용적인 답변으로, 요청사항에 맞는 상세한 내용을 포함"
             logger.warning("기대 결과가 비어있어 기본값으로 대체")
-        
-        from autopromptix_efficient import optimize_prompt_simple
         
         result = await optimize_prompt_simple(
             user_input=req.user_input,

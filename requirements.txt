@@ -1,18 +1,17 @@
+# FastAPI and server
 fastapi
 uvicorn[standard]
-websockets
-python-multipart
-python-jose[cryptography]
-passlib[bcrypt]
-python-dotenv
-sqlalchemy
-alembic
-psycopg2-binary
-redis
-celery
-pydantic
-pydantic-settings
+# OpenAI integration
 openai
-langchain
-langchain-openai
+
+# Text processing and evaluation
+rapidfuzz
+rouge-score
+scikit-learn
+numpy
+
+# Utilities
+python-multipart
 python-dotenv
+
+rapidfuzz
